@@ -364,7 +364,7 @@ export default function Dashboard() {
                         <div className="flex items-center justify-center space-x-2">
                           <button
                             onClick={(e) => handleDeleteImportLog(log.id, e)}
-                            className="inline-flex items-center justify-center w-8 h-8 bg-red-100 text-red-600 hover:bg-red-200 hover:text-red-800 rounded-md border border-red-300 transition-colors duration-200"
+                            className="inline-flex items-center justify-center w-8 h-8  text-red-600 hover:bg-red-200 hover:text-red-800 rounded-md border  transition-colors duration-200"
                             title="Delete import log"
                             type="button"
                           >
