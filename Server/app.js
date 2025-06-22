@@ -4,38 +4,26 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import Job from './models/job.js';
 import ImportLog from './models/ImportLog.js';
-import JobFeed from './models/jobFeed.js'; // Import the new JobFeed model
-
-// import { jobQueue } from './queue/jobQueue.js'; // Import jobQueue to add import jobs - disabled for now
+import JobFeed from './models/jobFeed.js';
 
 dotenv.config();
 
 // MongoDB Atlas connection with proper options
 mongoose.connect(process.env.MONGODB_URI, {
-  serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-  maxPoolSize: 10, // Maintain up to 10 socket connections
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 10,
 })
-.then(() => {
-  console.log('✅ Connected to MongoDB Atlas successfully');
-})
+.then(() => console.log('✅ Connected to MongoDB Atlas successfully'))
 .catch((error) => {
   console.error('❌ MongoDB Atlas connection error:', error);
   process.exit(1);
 });
 
 // Handle MongoDB connection events
-mongoose.connection.on('connected', () => {
-  console.log('📡 Mongoose connected to MongoDB Atlas');
-});
-
-mongoose.connection.on('error', (err) => {
-  console.error('❌ Mongoose connection error:', err);
-});
-
-mongoose.connection.on('disconnected', () => {
-  console.log('📴 Mongoose disconnected from MongoDB Atlas');
-});
+mongoose.connection.on('connected', () => console.log('📡 Mongoose connected to MongoDB Atlas'));
+mongoose.connection.on('error', (err) => console.error('❌ Mongoose connection error:', err));
+mongoose.connection.on('disconnected', () => console.log('📴 Mongoose disconnected from MongoDB Atlas'));
 
 // Graceful shutdown
 process.on('SIGINT', async () => {
@@ -49,17 +37,39 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Utility function to transform MongoDB documents for frontend
+// Utility functions
 const transformDocument = (doc) => {
   const obj = doc.toObject();
   const { _id, __v, ...cleanObj } = obj;
-  return {
-    ...cleanObj,
-    id: _id.toString(),
-  };
+  return { ...cleanObj, id: _id.toString() };
 };
 
-// API Routes for Feeds
+const validateId = (id, res, entityName = 'Entity') => {
+  if (!id || id === 'undefined' || id === 'null') {
+    console.error(`Invalid ${entityName.toLowerCase()} ID received:`, id);
+    res.status(400).json({ message: `Valid ${entityName.toLowerCase()} ID is required` });
+    return false;
+  }
+  return true;
+};
+
+const handleError = (error, res, message = 'An error occurred') => {
+  console.error(`Error: ${message}`, error);
+  res.status(500).json({ message });
+};
+
+const broadcastWebSocketMessage = (type, data) => {
+  if (global.wss) {
+    const message = JSON.stringify({ type, data });
+    global.wss.clients.forEach(client => {
+      if (client.readyState === 1) { // WebSocket.OPEN
+        client.send(message);
+      }
+    });
+  }
+};
+
+// Feed Routes
 app.get('/api/feeds', async (req, res) => {
   try {
     const { search } = req.query;
@@ -77,88 +87,61 @@ app.get('/api/feeds', async (req, res) => {
     }
 
     const feeds = await JobFeed.find(query).sort({ name: 1 });
+    const transformedFeeds = feeds.map(transformDocument);
 
-    // Transform _id to id for frontend compatibility
-    const transformedFeeds = feeds.map(feed => {
-      const transformed = transformDocument(feed);
-      return transformed;
-    });
-
-    res.json({ data: transformedFeeds }); // Wrap in data property to match frontend ApiResponse type
+    res.json({ data: transformedFeeds });
   } catch (error) {
-    console.error('Error fetching feeds:', error);
-    res.status(500).json({ message: 'Error fetching feeds' });
+    handleError(error, res, 'Error fetching feeds');
   }
 });
 
 app.post('/api/feeds', async (req, res) => {
   try {
     const newFeed = await JobFeed.create(req.body);
-
-    // Transform _id to id for frontend compatibility
     const transformedFeed = transformDocument(newFeed);
-
-    res.status(201).json({ data: transformedFeed }); // Wrap in data property
+    res.status(201).json({ data: transformedFeed });
   } catch (error) {
-    console.error('Error creating feed:', error);
-    res.status(500).json({ message: 'Error creating feed' });
+    handleError(error, res, 'Error creating feed');
   }
 });
 
 app.patch('/api/feeds/:id', async (req, res) => {
   try {
     const { id } = req.params;
-
-    // Validate feed ID
-    if (!id || id === 'undefined' || id === 'null') {
-      console.error('Invalid feed ID received:', id);
-      return res.status(400).json({ message: 'Valid feed ID is required' });
-    }
+    if (!validateId(id, res, 'Feed')) return;
 
     const updatedFeed = await JobFeed.findByIdAndUpdate(id, req.body, { new: true });
-
     if (!updatedFeed) {
       return res.status(404).json({ message: 'Feed not found' });
     }
 
-    // Transform _id to id for frontend compatibility
     const transformedFeed = transformDocument(updatedFeed);
-
-    res.json({ data: transformedFeed }); // Wrap in data property
+    res.json({ data: transformedFeed });
   } catch (error) {
-    console.error('Error updating feed:', error);
-    res.status(500).json({ message: 'Error updating feed' });
+    handleError(error, res, 'Error updating feed');
   }
 });
 
 app.delete('/api/feeds/:id', async (req, res) => {
   try {
     const { id } = req.params;
-
-    // Validate feed ID
-    if (!id || id === 'undefined' || id === 'null') {
-      console.error('Invalid feed ID received for deletion:', id);
-      return res.status(400).json({ message: 'Valid feed ID is required' });
-    }
+    if (!validateId(id, res, 'Feed')) return;
 
     const deletedFeed = await JobFeed.findByIdAndDelete(id);
-
     if (!deletedFeed) {
       return res.status(404).json({ message: 'Feed not found' });
     }
 
-    res.status(204).send(); // No content for successful deletion
+    res.status(204).send();
   } catch (error) {
-    console.error('Error deleting feed:', error);
-    res.status(500).json({ message: 'Error deleting feed' });
+    handleError(error, res, 'Error deleting feed');
   }
 });
 
-// Existing routes
+// Job Routes
 app.get('/api/jobs', async (req, res) => {
   try {
     const jobs = await Job.find({}, {
-      // Only select essential fields
       title: 1,
       company: 1,
       location: 1,
@@ -168,9 +151,8 @@ app.get('/api/jobs', async (req, res) => {
     })
     .sort({ createdAt: -1 })
     .limit(100)
-    .lean(); // Use lean() for better performance
+    .lean();
 
-    // Minimal transformation
     const transformedJobs = jobs.map(job => ({
       id: job._id.toString(),
       title: job.title,
@@ -183,19 +165,18 @@ app.get('/api/jobs', async (req, res) => {
 
     res.json({ data: transformedJobs });
   } catch (error) {
-    console.error('Error fetching jobs:', error);
-    res.status(500).json({ message: 'Error fetching jobs' });
+    handleError(error, res, 'Error fetching jobs');
   }
 });
 
+// Import Log Routes
 app.get('/api/import-logs', async (req, res) => {
   try {
     const { search, date, page = 1, limit = 10 } = req.query;
     const pageNum = parseInt(page);
-    const limitNum = Math.min(parseInt(limit), 50); // Cap limit to prevent large queries
+    const limitNum = Math.min(parseInt(limit), 50);
     const skip = (pageNum - 1) * limitNum;
 
-    // Build query
     let query = {};
 
     if (search) {
@@ -209,11 +190,9 @@ app.get('/api/import-logs', async (req, res) => {
       query.timestamp = { $gte: startDate, $lt: endDate };
     }
 
-    // Use Promise.all to run count and find queries in parallel
     const [total, logs] = await Promise.all([
       ImportLog.countDocuments(query),
       ImportLog.find(query, {
-        // Select all needed fields including new ones
         feedUrl: 1,
         feedName: 1,
         status: 1,
@@ -229,19 +208,18 @@ app.get('/api/import-logs', async (req, res) => {
       .sort({ timestamp: -1 })
       .skip(skip)
       .limit(limitNum)
-      .lean() // Use lean() for better performance
+      .lean()
     ]);
 
     const totalPages = Math.ceil(total / limitNum);
 
-    // Transform with enhanced processing
     const sanitizedLogs = logs.map(log => ({
       id: log._id.toString(),
       feedUrl: log.feedUrl || '',
       feedName: log.feedName || 'Unknown Feed',
       status: log.status || 'unknown',
-      totalJobs: log.totalJobs || 0, // Total fetched from feed
-      totalImported: log.totalImported || 0, // Successfully imported
+      totalJobs: log.totalJobs || 0,
+      totalImported: log.totalImported || 0,
       newJobs: log.newJobs || 0,
       updatedJobs: log.updatedJobs || 0,
       failedJobs: log.failedJobs || 0,
@@ -259,40 +237,29 @@ app.get('/api/import-logs', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error fetching import logs:', error);
-    res.status(500).json({ message: 'Error fetching import logs' });
+    handleError(error, res, 'Error fetching import logs');
   }
 });
 
-// Get individual import log details with associated job records
 app.get('/api/import-logs/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    if (!validateId(id, res, 'Import log')) return;
 
-    // Validate import log ID
-    if (!id || id === 'undefined' || id === 'null') {
-      console.error('Invalid import log ID received:', id);
-      return res.status(400).json({ message: 'Valid import log ID is required' });
-    }
-
-    // Find the import log
     const importLog = await ImportLog.findById(id).lean();
-
     if (!importLog) {
       return res.status(404).json({ message: 'Import log not found' });
     }
 
-    // Create job records that EXACTLY match totalJobs count
+    // Generate job records that match totalJobs count
     const allJobs = [];
     const totalJobsCount = importLog.totalJobs || 0;
 
-    // Create exactly totalJobs number of job records
     for (let i = 0; i < totalJobsCount; i++) {
       let status = 'new';
       let title = `Job ${i + 1}`;
       let failureReason = undefined;
 
-      // Determine status based on counts
       if (i < (importLog.newJobs || 0)) {
         status = 'new';
         title = `New Job ${i + 1}`;
@@ -305,83 +272,69 @@ app.get('/api/import-logs/:id', async (req, res) => {
         const failedJobDetail = (importLog.failedJobDetails || [])[failedIndex];
         title = failedJobDetail?.title || `Failed Job ${failedIndex + 1}`;
         failureReason = failedJobDetail?.reason || 'No detailed failure information available';
-      } else {
-        // Additional jobs beyond new+updated+failed (these are "other" jobs)
-        status = 'new'; // Default to new for any extra jobs
-        title = `Additional Job ${i + 1}`;
       }
 
       allJobs.push({
         id: `job_${i + 1}`,
-        title: title,
+        title,
         company: `Company ${i + 1}`,
         location: `Location ${i + 1}`,
-        status: status,
-        failureReason: failureReason,
+        status,
+        failureReason,
         url: `https://example.com/job/${i + 1}`,
         importLogId: id
       });
     }
 
-    // Transform the import log with enhanced details
     const transformedImportLog = {
       id: importLog._id.toString(),
       feedUrl: importLog.feedUrl || '',
       feedName: importLog.feedName || 'Unknown Feed',
       status: importLog.status || 'unknown',
-      totalJobs: importLog.totalJobs || 0, // Total fetched
-      totalImported: importLog.totalImported || 0, // Successfully imported
+      totalJobs: importLog.totalJobs || 0,
+      totalImported: importLog.totalImported || 0,
       newJobs: importLog.newJobs || 0,
       updatedJobs: importLog.updatedJobs || 0,
       failedJobs: importLog.failedJobs || 0,
       timestamp: importLog.timestamp,
       duration: importLog.duration || 0,
-      failedJobDetails: importLog.failedJobDetails || [], // Real failed job details
+      failedJobDetails: importLog.failedJobDetails || [],
       jobs: allJobs
     };
 
-    // Validate that job counts match summary (for debugging)
-    const actualCounts = {
-      new: allJobs.filter(job => job.status === 'new').length,
-      updated: allJobs.filter(job => job.status === 'updated').length,
-      failed: allJobs.filter(job => job.status === 'failed').length
-    };
-
-    // Log any mismatches for debugging
-    if (actualCounts.new !== transformedImportLog.newJobs ||
-        actualCounts.updated !== transformedImportLog.updatedJobs ||
-        actualCounts.failed !== transformedImportLog.failedJobs) {
-      console.warn(`Job count mismatch for import ${id}:`, {
-        expected: { new: transformedImportLog.newJobs, updated: transformedImportLog.updatedJobs, failed: transformedImportLog.failedJobs },
-        actual: actualCounts
-      });
-    }
-
     res.json({ data: transformedImportLog });
   } catch (error) {
-    console.error('Error fetching import log details:', error);
-    res.status(500).json({ message: 'Error fetching import log details' });
+    handleError(error, res, 'Error fetching import log details');
   }
 });
 
-// New API route to manually trigger a feed import
+app.delete('/api/import-logs/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!validateId(id, res, 'Import log')) return;
+
+    const deletedImportLog = await ImportLog.findByIdAndDelete(id);
+    if (!deletedImportLog) {
+      return res.status(404).json({ message: 'Import log not found' });
+    }
+
+    res.status(204).send();
+  } catch (error) {
+    handleError(error, res, 'Error deleting import log');
+  }
+});
+
+// Import Process Routes
 app.post('/api/import/start', async (req, res) => {
   try {
     const { feedId } = req.query;
-
-    // Validate feed ID
-    if (!feedId || feedId === 'undefined' || feedId === 'null') {
-      console.error('Invalid feedId received for import:', feedId);
-      return res.status(400).json({ message: 'Valid feed ID is required' });
-    }
+    if (!validateId(feedId, res, 'Feed')) return;
 
     const feed = await JobFeed.findById(feedId);
-
     if (!feed) {
       return res.status(404).json({ message: 'Feed not found' });
     }
 
-    // Create import log with in_progress status
     const importLog = await ImportLog.create({
       feedUrl: feed.url,
       feedName: feed.name,
@@ -393,7 +346,6 @@ app.post('/api/import/start', async (req, res) => {
       status: 'in_progress'
     });
 
-    // Send immediate response
     res.status(202).json({
       data: {
         importId: importLog._id.toString(),
@@ -401,36 +353,23 @@ app.post('/api/import/start', async (req, res) => {
       }
     });
 
-    // Broadcast import started to WebSocket clients
-    if (global.wss) {
-      const startMessage = JSON.stringify({
-        type: 'import_started',
-        data: {
-          feedId: feedId,
-          feedName: feed.name,
-          importId: importLog._id.toString()
-        }
-      });
-
-      global.wss.clients.forEach(client => {
-        if (client.readyState === 1) { // WebSocket.OPEN
-          client.send(startMessage);
-        }
-      });
-    }
+    // Broadcast import started
+    broadcastWebSocketMessage('import_started', {
+      feedId,
+      feedName: feed.name,
+      importId: importLog._id.toString()
+    });
 
     // Simulate import process asynchronously
     setTimeout(async () => {
       try {
-        // Simulate some processing time and generate mock data
         const mockJobCounts = {
           totalJobs: Math.floor(Math.random() * 100) + 10,
           newJobs: Math.floor(Math.random() * 50) + 5,
           updatedJobs: Math.floor(Math.random() * 30) + 2,
-          failedJobs: Math.floor(Math.random() * 5) + 1 // Ensure at least 1 failed job for testing
+          failedJobs: Math.floor(Math.random() * 5) + 1
         };
 
-        // Create mock failed job details for testing
         const mockFailedJobDetails = [];
         for (let i = 0; i < mockJobCounts.failedJobs; i++) {
           mockFailedJobDetails.push({
@@ -441,7 +380,6 @@ app.post('/api/import/start', async (req, res) => {
           });
         }
 
-        // Update import log with results including failed job details
         await ImportLog.findByIdAndUpdate(importLog._id, {
           ...mockJobCounts,
           totalImported: mockJobCounts.newJobs + mockJobCounts.updatedJobs,
@@ -449,74 +387,43 @@ app.post('/api/import/start', async (req, res) => {
           status: 'completed'
         });
 
-        // Update feed's last import timestamp and job count
         await JobFeed.findByIdAndUpdate(feedId, {
           lastImport: new Date(),
           totalJobsImported: (feed.totalJobsImported || 0) + mockJobCounts.newJobs
         });
 
-        // Broadcast to all WebSocket clients
-        if (global.wss) {
-          const message = JSON.stringify({
-            type: 'import_completed',
-            data: {
-              feedId: feedId,
-              feedName: feed.name,
-              importId: importLog._id.toString(),
-              jobCount: mockJobCounts.totalJobs,
-              newJobs: mockJobCounts.newJobs,
-              updatedJobs: mockJobCounts.updatedJobs,
-              failedJobs: mockJobCounts.failedJobs
-            }
-          });
-
-          global.wss.clients.forEach(client => {
-            if (client.readyState === 1) { // WebSocket.OPEN
-              client.send(message);
-            }
-          });
-        }
+        broadcastWebSocketMessage('import_completed', {
+          feedId,
+          feedName: feed.name,
+          importId: importLog._id.toString(),
+          jobCount: mockJobCounts.totalJobs,
+          newJobs: mockJobCounts.newJobs,
+          updatedJobs: mockJobCounts.updatedJobs,
+          failedJobs: mockJobCounts.failedJobs
+        });
 
       } catch (error) {
         console.error('Error completing import:', error);
 
-        // Update import log with failed status
-        await ImportLog.findByIdAndUpdate(importLog._id, {
-          status: 'failed'
+        await ImportLog.findByIdAndUpdate(importLog._id, { status: 'failed' });
+
+        broadcastWebSocketMessage('import_failed', {
+          feedId,
+          feedName: feed.name,
+          importId: importLog._id.toString(),
+          error: 'Import processing failed'
         });
-
-        // Broadcast failure to WebSocket clients
-        if (global.wss) {
-          const message = JSON.stringify({
-            type: 'import_failed',
-            data: {
-              feedId: feedId,
-              feedName: feed.name,
-              importId: importLog._id.toString(),
-              error: 'Import processing failed'
-            }
-          });
-
-          global.wss.clients.forEach(client => {
-            if (client.readyState === 1) {
-              client.send(message);
-            }
-          });
-        }
       }
-    }, 2000 + Math.random() * 3000); // Random delay between 2-5 seconds
+    }, 2000 + Math.random() * 3000);
 
   } catch (error) {
-    console.error('Error starting feed import:', error);
-    res.status(500).json({ message: 'Failed to start feed import' });
+    handleError(error, res, 'Failed to start feed import');
   }
 });
 
-// New API route to get import status
 app.get('/api/import/status/:id', async (req, res) => {
   try {
-    const { id } = req.params; // This `id` is the import log ID
-
+    const { id } = req.params;
     const importLog = await ImportLog.findById(id);
 
     if (!importLog) {
@@ -530,32 +437,7 @@ app.get('/api/import/status/:id', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error getting import status:', error);
-    res.status(500).json({ message: 'Failed to get import status' });
-  }
-});
-
-// Delete import log
-app.delete('/api/import-logs/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Validate import log ID
-    if (!id || id === 'undefined' || id === 'null') {
-      console.error('Invalid import log ID received for deletion:', id);
-      return res.status(400).json({ message: 'Valid import log ID is required' });
-    }
-
-    const deletedImportLog = await ImportLog.findByIdAndDelete(id);
-
-    if (!deletedImportLog) {
-      return res.status(404).json({ message: 'Import log not found' });
-    }
-
-    res.status(204).send(); // No content for successful deletion
-  } catch (error) {
-    console.error('Error deleting import log:', error);
-    res.status(500).json({ message: 'Error deleting import log' });
+    handleError(error, res, 'Failed to get import status');
   }
 });
 
