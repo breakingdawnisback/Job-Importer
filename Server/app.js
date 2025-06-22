@@ -128,15 +128,137 @@ app.post('/api/import/start', asyncHandler(async (req, res) => {
   const { feedId } = req.query;
   const feed = await JobFeed.findById(feedId);
   if (!feed) return res.status(404).json({ message: 'Feed not found' });
+  
   const importLog = await ImportLog.create({
     feedUrl: feed.url, totalJobs: 0, newJobs: 0, updatedJobs: 0, failedJobs: 0,
     timestamp: new Date(), status: 'in_progress'
   });
+  
   res.status(202).json({
     data: { importId: importLog._id.toString(), message: `Import for feed ${feed.name} started.` }
   });
-  // Simulate import process (same as before, omitted for brevity)
+
+  // Process import asynchronously
+  processImport(importLog._id, feed);
 }));
+
+// Import processing function
+async function processImport(importLogId, feed) {
+  try {
+    console.log(`🚀 Starting import for feed: ${feed.name}`);
+    
+    // Fetch RSS feed
+    const response = await fetch(feed.url);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch feed: ${response.statusText}`);
+    }
+    
+    const feedText = await response.text();
+    
+    // Simple XML parsing for job feeds (you might want to use a proper XML parser)
+    const jobMatches = feedText.match(/<item>[\s\S]*?<\/item>/g) || [];
+    
+    let newJobs = 0;
+    let updatedJobs = 0;
+    let failedJobs = 0;
+    const failedJobDetails = [];
+    
+    for (const jobXml of jobMatches) {
+      try {
+        // Extract job data from XML
+        const title = extractXmlValue(jobXml, 'title') || 'Unknown Title';
+        const description = extractXmlValue(jobXml, 'description') || '';
+        const link = extractXmlValue(jobXml, 'link') || '';
+        const pubDate = extractXmlValue(jobXml, 'pubDate') || new Date().toISOString();
+        
+        // Create job object
+        const jobData = {
+          title: title.trim(),
+          company: feed.name || 'Unknown Company',
+          location: feed.region || 'Remote',
+          description: description.substring(0, 1000), // Limit description length
+          url: link,
+          category: feed.category || 'General',
+          feedId: feed._id,
+          feedUrl: feed.url,
+          publishedAt: new Date(pubDate),
+          createdAt: new Date(),
+          updatedAt: new Date()
+        };
+        
+        // Check if job already exists
+        const existingJob = await Job.findOne({ 
+          $or: [
+            { url: jobData.url },
+            { title: jobData.title, company: jobData.company }
+          ]
+        });
+        
+        if (existingJob) {
+          // Update existing job
+          await Job.findByIdAndUpdate(existingJob._id, {
+            ...jobData,
+            updatedAt: new Date()
+          });
+          updatedJobs++;
+        } else {
+          // Create new job
+          await Job.create(jobData);
+          newJobs++;
+        }
+        
+      } catch (jobError) {
+        console.error(`Failed to process job:`, jobError);
+        failedJobs++;
+        failedJobDetails.push({
+          title: 'Failed to parse job',
+          reason: jobError.message
+        });
+      }
+    }
+    
+    // Update import log with results
+    await ImportLog.findByIdAndUpdate(importLogId, {
+      totalJobs: newJobs + updatedJobs + failedJobs,
+      newJobs,
+      updatedJobs,
+      failedJobs,
+      failedJobDetails,
+      status: 'completed',
+      completedAt: new Date()
+    });
+    
+    // Update feed statistics
+    await JobFeed.findByIdAndUpdate(feed._id, {
+      totalJobsImported: (feed.totalJobsImported || 0) + newJobs,
+      lastImport: new Date(),
+      $inc: { importCount: 1 }
+    });
+    
+    console.log(`✅ Import completed for ${feed.name}: ${newJobs} new, ${updatedJobs} updated, ${failedJobs} failed`);
+    
+  } catch (error) {
+    console.error(`❌ Import failed for feed ${feed.name}:`, error);
+    
+    // Update import log with failure
+    await ImportLog.findByIdAndUpdate(importLogId, {
+      status: 'failed',
+      failedJobs: 1,
+      failedJobDetails: [{
+        title: 'Import process failed',
+        reason: error.message
+      }],
+      completedAt: new Date()
+    });
+  }
+}
+
+// Helper function to extract values from XML
+function extractXmlValue(xml, tag) {
+  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
+  const match = xml.match(regex);
+  return match ? match[1].replace(/<!\[CDATA\[(.*?)\]\]>/g, '$1').trim() : null;
+}
 
 app.get('/api/import/status/:id', asyncHandler(async (req, res) => {
   const log = await ImportLog.findById(req.params.id);
