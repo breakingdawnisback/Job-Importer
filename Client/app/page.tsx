@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react"
 import { useRouter } from "next/navigation"
-import { Search, Calendar, ExternalLink, RefreshCw } from "lucide-react"
+import { Search, Calendar, ExternalLink, RefreshCw, Trash2 } from "lucide-react"
 import type { ImportLog } from "@/types"
 import { apiClient } from "@/lib/api-client"
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "@/components/table"
@@ -95,6 +95,32 @@ export default function Dashboard() {
     setRefreshing(true)
     await loadImportLogs(currentPage, searchTerm, dateFilter)
   }, [loadImportLogs, currentPage, searchTerm, dateFilter])
+
+  const handleDeleteImportLog = useCallback(async (id: string, event: React.MouseEvent) => {
+    event.stopPropagation() // Prevent row click navigation
+    
+    if (!confirm("Are you sure you want to delete this import log? This action cannot be undone.")) {
+      return
+    }
+
+    try {
+      await apiClient.deleteImportLog(id)
+      showSuccess("Import Log Deleted", "The import log has been successfully deleted.")
+      
+      // Refresh the current page or go to previous page if current page becomes empty
+      const remainingLogs = importLogs.length - 1
+      const shouldGoToPreviousPage = remainingLogs === 0 && currentPage > 1
+      
+      if (shouldGoToPreviousPage) {
+        handlePageChange(currentPage - 1)
+      } else {
+        await loadImportLogs(currentPage, searchTerm, dateFilter)
+      }
+    } catch (error) {
+      console.error("Error deleting import log:", error)
+      showError("Delete Failed", "Failed to delete the import log. Please try again.")
+    }
+  }, [apiClient, showSuccess, showError, importLogs.length, currentPage, handlePageChange, loadImportLogs, searchTerm, dateFilter])
 
   // Handle WebSocket messages for real-time updates
   useEffect(() => {
@@ -310,14 +336,14 @@ export default function Dashboard() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead children="Feed URL" />
-                    <TableHead children="Status" />
-                    <TableHead children="Total Jobs" className="text-center" />
-                    <TableHead children="New" className="text-center" />
-                    <TableHead children="Updated" className="text-center" />
-                    <TableHead children="Failed" className="text-center" />
-                    <TableHead children="Import Date" />
-                    <TableHead children="" />
+                    <TableHead>Feed URL</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-center">Total Jobs</TableHead>
+                    <TableHead className="text-center">New</TableHead>
+                    <TableHead className="text-center">Updated</TableHead>
+                    <TableHead className="text-center">Failed</TableHead>
+                    <TableHead>Import Date</TableHead>
+                    <TableHead className="text-center">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -334,8 +360,17 @@ export default function Dashboard() {
                       <TableCell className="text-center text-blue-600 font-medium">{log.updatedJobs || 0}</TableCell>
                       <TableCell className="text-center text-red-600 font-medium">{log.failedJobs || 0}</TableCell>
                       <TableCell className="text-gray-500">{log.timestamp ? formatDate(log.timestamp) : 'N/A'}</TableCell>
-                      <TableCell>
-                        <ExternalLink className="h-4 w-4 text-gray-400" />
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center space-x-2">
+                          <button
+                            onClick={(e) => handleDeleteImportLog(log.id, e)}
+                            className="inline-flex items-center justify-center w-8 h-8 bg-red-100 text-red-600 hover:bg-red-200 hover:text-red-800 rounded-md border border-red-300 transition-colors duration-200"
+                            title="Delete import log"
+                            type="button"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   ))}

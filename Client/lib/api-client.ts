@@ -104,6 +104,12 @@ class ApiClient {
     return response.data
   }
 
+  async deleteImportLog(id: string): Promise<void> {
+    await this.request(`${API_ENDPOINTS.IMPORT_LOGS}/${id}`, {
+      method: "DELETE",
+    })
+  }
+
   async startImport(feedId: string): Promise<{ importId: string; message: string }> {
     const url = `${API_ENDPOINTS.IMPORT_START}?feedId=${feedId}`
     const response = await this.request<ApiResponse<{ importId: string; message: string }>>(url, { method: "POST" })
